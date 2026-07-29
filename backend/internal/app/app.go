@@ -17,6 +17,7 @@ import (
 	"github.com/conduit-platform/conduit/backend/internal/platform/database"
 	"github.com/conduit-platform/conduit/backend/internal/platform/observability"
 	"github.com/conduit-platform/conduit/backend/internal/server"
+	"github.com/conduit-platform/conduit/backend/internal/user"
 )
 
 // App holds all application dependencies.
@@ -65,8 +66,13 @@ func New(ctx context.Context) (*App, error) {
 	// 6. Create health handler.
 	healthHandler := health.NewHandler(db, redisClient)
 
-	// 7. Create HTTP server.
-	srv := server.New(cfg, logger, healthHandler)
+	// 7. Create user domain.
+	userRepo := user.NewPostgresRepository(db)
+	userService := user.NewService(userRepo, logger)
+	userHandler := user.NewHandler(userService)
+
+	// 8. Create HTTP server.
+	srv := server.New(cfg, logger, healthHandler, userHandler)
 
 	return &App{
 		cfg:          cfg,

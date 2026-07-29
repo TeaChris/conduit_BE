@@ -1,0 +1,38 @@
+run:
+  timeout: 5m
+  go: "1.24"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - gosimple
+    - ineffassign
+    - revive
+    - gocritic
+    - gofumpt
+    - misspell
+    - unconvert
+    - bodyclose
+    - noctx
+
+linters-settings:
+  revive:
+    rules:
+      - name: exported
+        arguments:
+          - checkPrivateReceivers
+      - name: unused-parameter
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - style
+      - performance
+
+issues:
+  exclude-dirs:
+    - internal/platform/database/sqlcdb
+  max-issues-per-linter: 50
+  max-same-issues: 5
