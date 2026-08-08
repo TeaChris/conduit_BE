@@ -28,6 +28,8 @@ UPDATE users
 SET email = @email,
     display_name = @display_name,
     metadata = @metadata,
+    email_verified = @email_verified,
+    email_verified_at = @email_verified_at,
     updated_at = now()
 WHERE id = @id AND tenant_id = @tenant_id
 RETURNING *;
