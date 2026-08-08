@@ -72,8 +72,10 @@ const (
 
 	queryUpdateUser = `
 		UPDATE users
-		SET email = $1, display_name = $2, metadata = $3, updated_at = now()
-		WHERE id = $4 AND tenant_id = $5
+		SET email = $1, display_name = $2, metadata = $3,
+		    email_verified = $4, email_verified_at = $5,
+		    updated_at = now()
+		WHERE id = $6 AND tenant_id = $7
 		RETURNING id, tenant_id, email, display_name, status, email_verified,
 		          email_verified_at, metadata, deactivated_at, created_at, updated_at`
 
@@ -258,6 +260,8 @@ func (r *PostgresRepository) Update(ctx context.Context, user *User) (*User, err
 		user.Email,
 		user.DisplayName,
 		metadata,
+		user.EmailVerified,
+		user.EmailVerifiedAt,
 		user.ID,
 		user.TenantID,
 	)
