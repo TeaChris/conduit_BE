@@ -342,3 +342,80 @@ func TestCreateUser_NoTenant(t *testing.T) {
 		t.Errorf("expected TENANT_REQUIRED error, got: %v", err)
 	}
 }
+
+func TestUpdateUser_EmailChangeResetsVerification(t *testing.T) {
+	tenantID := uuid.New()
+	ctx := testContext(tenantID)
+
+	existingUser := activeUser(tenantID)
+	existingUser.EmailVerified = true
+	now := time.Now().UTC()
+	existingUser.EmailVerifiedAt = &now
+
+	var capturedUser *User
+	repo := &mockRepository{
+		getByIDFn: func(_ context.Context, _, _ uuid.UUID) (*User, error) {
+			return existingUser, nil
+		},
+		updateFn: func(_ context.Context, user *User) (*User, error) {
+			capturedUser = user
+			return user, nil
+		},
+	}
+
+	svc := newTestService(repo)
+	newEmail := "newemail@example.com"
+	_, err := svc.UpdateUser(ctx, existingUser.ID, UpdateUserInput{
+		Email: &newEmail,
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedUser.EmailVerified != false {
+		t.Error("email_verified should be reset to false on email change")
+	}
+	if capturedUser.EmailVerifiedAt != nil {
+		t.Error("email_verified_at should be nil on email change")
+	}
+	if capturedUser.Email != "newemail@example.com" {
+		t.Errorf("email: got %q, want %q", capturedUser.Email, "newemail@example.com")
+	}
+}
+
+func TestUpdateUser_SameEmailNoReset(t *testing.T) {
+	tenantID := uuid.New()
+	ctx := testContext(tenantID)
+
+	existingUser := activeUser(tenantID)
+	existingUser.EmailVerified = true
+	now := time.Now().UTC()
+	existingUser.EmailVerifiedAt = &now
+
+	var capturedUser *User
+	repo := &mockRepository{
+		getByIDFn: func(_ context.Context, _, _ uuid.UUID) (*User, error) {
+			return existingUser, nil
+		},
+		updateFn: func(_ context.Context, user *User) (*User, error) {
+			capturedUser = user
+			return user, nil
+		},
+	}
+
+	svc := newTestService(repo)
+	sameEmail := "test@example.com" // same as activeUser default
+	_, err := svc.UpdateUser(ctx, existingUser.ID, UpdateUserInput{
+		Email: &sameEmail,
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedUser.EmailVerified != true {
+		t.Error("email_verified should NOT be reset when email doesn't change")
+	}
+	if capturedUser.EmailVerifiedAt == nil {
+		t.Error("email_verified_at should NOT be cleared when email doesn't change")
+	}
+}
