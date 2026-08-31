@@ -20,19 +20,24 @@ Authentication is the process of verifying identity.
 - This is *not* a true authentication mechanism but serves as a boundary marker for tenant isolation during early development.
 
 ### Future State
-- **JWT-Based Authentication**: For user-facing applications, we will implement JSON Web Tokens (JWT).
-  - Tokens must be signed using a strong algorithm (e.g., RS256).
-  - Tokens must have a short expiration time (e.g., 15-60 minutes).
-  - Refresh tokens will be used for session extension and must be stored securely, ideally using HttpOnly, Secure cookies.
+- **JWT-Based Authentication**: For user-facing applications, we implement JSON Web Tokens (JWT).
+  - Tokens must be signed using **EdDSA with Ed25519** keys. This is the platform standard per [TDR-0001](../rfcs/decisions/0001-authentication-cryptography.md).
+  - JWT verification must explicitly validate that the `alg` header is `EdDSA`. Tokens using any other algorithm (including `none`, `HS256`, `RS256`) must be rejected to prevent algorithm confusion attacks.
+  - JWTs must include a `kid` (Key ID) header to support key rotation without downtime.
+  - Tokens must have a short expiration time (e.g., 15 minutes). Short-lived tokens limit the blast radius of a compromised token and reduce the need for server-side revocation infrastructure.
+  - Refresh tokens will be used for session extension and must be stored securely. Refresh tokens are opaque (not JWTs) and must be stored as hashes in the database — never in plaintext.
 - **API Key Authentication**: For programmatic access (machine-to-machine).
   - API keys will be hashed before storage (e.g., using SHA-256).
   - Keys will be prefixed to allow easy identification (e.g., `cdt_live_xxxx...`).
 
 ### Token Validation Rules
-- Always validate the token signature.
+- Always validate the token signature using the public key identified by the `kid` header.
+- Always verify the signing algorithm is `EdDSA`. Reject all other algorithms.
 - Always check the `exp` (expiration) and `nbf` (not before) claims.
 - Validate the `iss` (issuer) and `aud` (audience) claims.
-- Session management principles dictate that tokens should be easily revocable via a fast lookup (e.g., Redis blocklist).
+- Validate required custom claims (`sub`, `sid`, `tid`) are present and contain valid UUIDs.
+- Allow a small clock skew tolerance (e.g., 5 seconds) for expiration checks.
+- Session management principles dictate that tokens should be easily revocable via a fast lookup (e.g., Redis blocklist) if the short token lifetime proves insufficient.
 
 ## 4. Authorization
 Authorization determines what an authenticated identity is allowed to do.
@@ -47,13 +52,18 @@ Authorization determines what an authenticated identity is allowed to do.
 - **Always verify tenant ownership at the query level**: Do not fetch a record by its ID and then check the tenant in code. Include the `tenant_id` in the SQL `WHERE` clause.
 - **Defense in Depth**: Never rely solely on middleware for authorization. Handlers and service layers must explicitly authorize the requested action against the specific resource.
 
-## 5. Password Handling (Future)
+## 5. Password Handling
 When implementing local user authentication, passwords must be handled with the utmost care.
 
-- **Hashing Algorithm**: Use `bcrypt` with a minimum cost factor of 12.
+- **Hashing Algorithm**: Use **Argon2id** for all new password credentials. This is the platform standard per [TDR-0001](../rfcs/decisions/0001-authentication-cryptography.md). Argon2id is the winner of the Password Hashing Competition and provides memory-hardness that resists GPU/ASIC-accelerated cracking.
+  - Initial parameters: Memory 64 MiB, Iterations 3, Parallelism 4, Salt 16 bytes, Key length 32 bytes.
+  - Parameters must be centralized in a single configuration struct and must not be scattered throughout application code.
+  - Output must use the PHC string format (`$argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>`), which self-describes the algorithm and parameters for future upgradability.
 - **Never Store Plaintext**: Plaintext passwords must never be written to disk, databases, or memory caches.
-- **Never Log Passwords**: Ensure logging configurations explicitly strip or redact password fields from request bodies.
-- **Constant-Time Comparison**: Use `bcrypt.CompareHashAndPassword` or a constant-time string comparison function to prevent timing attacks.
+- **Never Log Passwords**: Ensure logging configurations explicitly strip or redact password fields from request bodies. Passwords must never appear in structured log fields, error messages, or API responses.
+- **Constant-Time Comparison**: Use the Argon2id library's built-in verification (which performs constant-time comparison) or an explicit constant-time comparison function to prevent timing attacks.
+- **Anti-Enumeration**: When a login attempt targets a non-existent email, perform a dummy hash verification to prevent timing-based account enumeration.
+- **Password Length**: Enforce a minimum of 12 characters and a maximum of 128 characters. Do not enforce arbitrary composition rules (uppercase, symbols, etc.) per NIST SP 800-63B guidance.
 
 ## 6. Secret Management
 Secrets include API keys, database credentials, TLS certificates, and encryption keys.
@@ -95,7 +105,7 @@ Personally Identifiable Information (PII) must be carefully managed to comply wi
 Our architecture must defend against the OWASP Top 10 web application security risks:
 
 - **A01:2021-Broken Access Control**: Enforced via mandatory `tenant_id` query scoping and future RBAC.
-- **A02:2021-Cryptographic Failures**: Enforced by requiring TLS for all traffic, using strong hashing (`bcrypt`), and encrypting data at rest.
+- **A02:2021-Cryptographic Failures**: Enforced by requiring TLS for all traffic, using strong password hashing (Argon2id), JWT signing with EdDSA/Ed25519, and encrypting data at rest.
 - **A03:2021-Injection**: Prevented entirely via `sqlc` and `pgx` parameterized queries.
 - **A04:2021-Insecure Design**: Mitigated through defense in depth, threat modeling, and secure by default principles.
 - **A05:2021-Security Misconfiguration**: Managed via IaC, disabling debug features in prod, and strict CORS policies.
