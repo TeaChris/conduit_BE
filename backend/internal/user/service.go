@@ -251,6 +251,38 @@ func (s *Service) ReactivateUser(ctx context.Context, userID uuid.UUID) (result 
 	return result, nil
 }
 
+// SetEmailVerified marks a user's email as verified.
+// This is an internal service method for use by the Auth domain (RFC-0001 FR-7).
+// It is NOT exposed as an HTTP endpoint.
+func (s *Service) SetEmailVerified(ctx context.Context, userID uuid.UUID) (result *User, err error) {
+	ctx, span := tracer.Start(ctx, "user.service.SetEmailVerified")
+	defer span.End()
+	start := time.Now()
+	defer func() { recordMetrics("set_email_verified", err, start) }()
+
+	tenantID, err := requireTenantID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	span.SetAttributes(
+		attribute.String("tenant_id", tenantID.String()),
+		attribute.String("user.id", userID.String()),
+	)
+
+	result, err = s.repo.SetEmailVerified(ctx, tenantID, userID)
+	if err != nil {
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
+
+	zerolog.Ctx(ctx).Info().
+		Str("user_id", userID.String()).
+		Str("tenant_id", tenantID.String()).
+		Msg("user email verified")
+
+	return result, nil
+}
+
 // --- Helpers ---
 
 // requireTenantID extracts the tenant ID from context and returns a parsed UUID.
