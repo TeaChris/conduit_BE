@@ -6,16 +6,37 @@ package sqlcdb
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Querier interface {
+	ConsumeEmailVerificationToken(ctx context.Context, id pgtype.UUID) error
+	ConsumePasswordResetToken(ctx context.Context, id pgtype.UUID) error
 	CountUsers(ctx context.Context, arg CountUsersParams) (int64, error)
+	CreateCredential(ctx context.Context, arg CreateCredentialParams) (UserCredential, error)
+	CreateEmailVerificationToken(ctx context.Context, arg CreateEmailVerificationTokenParams) (EmailVerificationToken, error)
+	CreatePasswordResetToken(ctx context.Context, arg CreatePasswordResetTokenParams) (PasswordResetToken, error)
+	CreateSession(ctx context.Context, arg CreateSessionParams) (AuthSession, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
+	DeleteExpiredSessions(ctx context.Context, before pgtype.Timestamptz) error
+	GetActiveSessionByFamilyID(ctx context.Context, familyID pgtype.UUID) (AuthSession, error)
+	GetCredentialByUserID(ctx context.Context, arg GetCredentialByUserIDParams) (UserCredential, error)
+	GetEmailVerificationTokenByHash(ctx context.Context, tokenHash string) (EmailVerificationToken, error)
+	GetPasswordResetTokenByHash(ctx context.Context, tokenHash string) (PasswordResetToken, error)
+	GetSessionByID(ctx context.Context, arg GetSessionByIDParams) (AuthSession, error)
 	GetUserByEmail(ctx context.Context, arg GetUserByEmailParams) (User, error)
 	GetUserByID(ctx context.Context, arg GetUserByIDParams) (User, error)
 	HealthCheck(ctx context.Context) (int32, error)
+	InvalidateEmailVerificationTokensForUser(ctx context.Context, arg InvalidateEmailVerificationTokensForUserParams) error
+	InvalidatePasswordResetTokensForUser(ctx context.Context, arg InvalidatePasswordResetTokensForUserParams) error
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
+	RevokeAllUserSessions(ctx context.Context, arg RevokeAllUserSessionsParams) error
+	RevokeOtherUserSessions(ctx context.Context, arg RevokeOtherUserSessionsParams) error
+	RevokeSession(ctx context.Context, arg RevokeSessionParams) error
+	RotateRefreshToken(ctx context.Context, arg RotateRefreshTokenParams) (AuthSession, error)
 	SetEmailVerified(ctx context.Context, arg SetEmailVerifiedParams) (User, error)
+	UpdatePasswordHash(ctx context.Context, arg UpdatePasswordHashParams) (UserCredential, error)
 	UpdateUser(ctx context.Context, arg UpdateUserParams) (User, error)
 	UpdateUserStatus(ctx context.Context, arg UpdateUserStatusParams) (User, error)
 }
