@@ -10,12 +10,15 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/conduit-platform/conduit/backend/internal/platform/database/sqlcdb"
 	platformerrors "github.com/conduit-platform/conduit/backend/internal/platform/errors"
 )
 
 // Repository defines the persistence contract for the User domain.
+// The application/service layer depends on this interface, not on PostgreSQL or sqlc.
 type Repository interface {
 	Create(ctx context.Context, user *User) (*User, error)
 	GetByID(ctx context.Context, tenantID, userID uuid.UUID) (*User, error)
@@ -26,161 +29,36 @@ type Repository interface {
 	SetEmailVerified(ctx context.Context, tenantID, userID uuid.UUID) (*User, error)
 }
 
-// PostgresRepository implements Repository using PostgreSQL via pgx.
+// PostgresRepository implements Repository using PostgreSQL via sqlc-generated queries.
 type PostgresRepository struct {
-	pool *pgxpool.Pool
+	queries *sqlcdb.Queries
 }
 
 // NewPostgresRepository creates a new PostgresRepository.
+// The pool satisfies sqlcdb.DBTX, so sqlc uses it directly.
 func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
-	return &PostgresRepository{pool: pool}
+	return &PostgresRepository{
+		queries: sqlcdb.New(pool),
+	}
 }
 
-const (
-	queryCreateUser = `
-		INSERT INTO users (tenant_id, email, display_name, status, metadata)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, tenant_id, email, display_name, status, email_verified,
-		          email_verified_at, metadata, deactivated_at, created_at, updated_at`
-
-	queryGetUserByID = `
-		SELECT id, tenant_id, email, display_name, status, email_verified,
-		       email_verified_at, metadata, deactivated_at, created_at, updated_at
-		FROM users
-		WHERE id = $1 AND tenant_id = $2`
-
-	queryGetUserByEmail = `
-		SELECT id, tenant_id, email, display_name, status, email_verified,
-		       email_verified_at, metadata, deactivated_at, created_at, updated_at
-		FROM users
-		WHERE tenant_id = $1 AND lower(email) = lower($2)`
-
-	queryListUsers = `
-		SELECT id, tenant_id, email, display_name, status, email_verified,
-		       email_verified_at, metadata, deactivated_at, created_at, updated_at
-		FROM users
-		WHERE tenant_id = $1
-		  AND ($2::text IS NULL OR status = $2)
-		ORDER BY created_at DESC
-		LIMIT $3 OFFSET $4`
-
-	queryCountUsers = `
-		SELECT count(*)
-		FROM users
-		WHERE tenant_id = $1
-		  AND ($2::text IS NULL OR status = $2)`
-
-	queryUpdateUser = `
-		UPDATE users
-		SET email = $1, display_name = $2, metadata = $3,
-		    email_verified = $4, email_verified_at = $5,
-		    updated_at = now()
-		WHERE id = $6 AND tenant_id = $7
-		RETURNING id, tenant_id, email, display_name, status, email_verified,
-		          email_verified_at, metadata, deactivated_at, created_at, updated_at`
-
-	queryUpdateUserStatus = `
-		UPDATE users
-		SET status = $1, deactivated_at = $2, updated_at = now()
-		WHERE id = $3 AND tenant_id = $4
-		RETURNING id, tenant_id, email, display_name, status, email_verified,
-		          email_verified_at, metadata, deactivated_at, created_at, updated_at`
-
-	querySetEmailVerified = `
-		UPDATE users
-		SET email_verified = true, email_verified_at = now(), updated_at = now()
-		WHERE id = $1 AND tenant_id = $2
-		RETURNING id, tenant_id, email, display_name, status, email_verified,
-		          email_verified_at, metadata, deactivated_at, created_at, updated_at`
-)
-
-// scanUser scans a single user row into a User domain model.
-func scanUser(row pgx.Row) (*User, error) {
-	var u User
-	var metadata []byte
-	var emailVerifiedAt, deactivatedAt *time.Time
-
-	err := row.Scan(
-		&u.ID,
-		&u.TenantID,
-		&u.Email,
-		&u.DisplayName,
-		&u.Status,
-		&u.EmailVerified,
-		&emailVerifiedAt,
-		&metadata,
-		&deactivatedAt,
-		&u.CreatedAt,
-		&u.UpdatedAt,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	u.EmailVerifiedAt = emailVerifiedAt
-	u.DeactivatedAt = deactivatedAt
-
-	if metadata != nil {
-		if err := json.Unmarshal(metadata, &u.Metadata); err != nil {
-			return nil, fmt.Errorf("unmarshaling user metadata: %w", err)
-		}
-	}
-	if u.Metadata == nil {
-		u.Metadata = make(map[string]any)
-	}
-
-	return &u, nil
-}
-
-// scanUsers scans multiple user rows.
-func scanUsers(rows pgx.Rows) ([]User, error) {
-	users := make([]User, 0)
-	for rows.Next() {
-		var u User
-		var metadata []byte
-		var emailVerifiedAt, deactivatedAt *time.Time
-
-		err := rows.Scan(
-			&u.ID, &u.TenantID, &u.Email, &u.DisplayName, &u.Status,
-			&u.EmailVerified, &emailVerifiedAt, &metadata, &deactivatedAt,
-			&u.CreatedAt, &u.UpdatedAt,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		u.EmailVerifiedAt = emailVerifiedAt
-		u.DeactivatedAt = deactivatedAt
-
-		if metadata != nil {
-			if err := json.Unmarshal(metadata, &u.Metadata); err != nil {
-				return nil, fmt.Errorf("unmarshaling user metadata: %w", err)
-			}
-		}
-		if u.Metadata == nil {
-			u.Metadata = make(map[string]any)
-		}
-
-		users = append(users, u)
-	}
-	return users, nil
-}
+// ---------------------------------------------------------------------------
+// Repository methods
+// ---------------------------------------------------------------------------
 
 func (r *PostgresRepository) Create(ctx context.Context, user *User) (*User, error) {
-	metadata, err := json.Marshal(user.Metadata)
+	metadata, err := marshalMetadata(user.Metadata)
 	if err != nil {
-		return nil, platformerrors.NewInfraError("user.repository.Create", fmt.Errorf("marshaling metadata: %w", err))
+		return nil, platformerrors.NewInfraError("user.repository.Create", err)
 	}
 
-	row := r.pool.QueryRow(ctx, queryCreateUser,
-		user.TenantID,
-		user.Email,
-		user.DisplayName,
-		string(user.Status),
-		metadata,
-	)
-
-	created, err := scanUser(row)
+	result, err := r.queries.CreateUser(ctx, sqlcdb.CreateUserParams{
+		TenantID:    uuidToPgtype(user.TenantID),
+		Email:       user.Email,
+		DisplayName: user.DisplayName,
+		Status:      string(user.Status),
+		Metadata:    metadata,
+	})
 	if err != nil {
 		if isUniqueViolation(err) {
 			return nil, ErrEmailAlreadyExists
@@ -188,85 +66,88 @@ func (r *PostgresRepository) Create(ctx context.Context, user *User) (*User, err
 		return nil, platformerrors.NewInfraError("user.repository.Create", err)
 	}
 
-	return created, nil
+	return toDomainUser(result)
 }
 
 func (r *PostgresRepository) GetByID(ctx context.Context, tenantID, userID uuid.UUID) (*User, error) {
-	row := r.pool.QueryRow(ctx, queryGetUserByID, userID, tenantID)
-	user, err := scanUser(row)
+	result, err := r.queries.GetUserByID(ctx, sqlcdb.GetUserByIDParams{
+		ID:       uuidToPgtype(userID),
+		TenantID: uuidToPgtype(tenantID),
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrUserNotFound
 		}
 		return nil, platformerrors.NewInfraError("user.repository.GetByID", err)
 	}
-	return user, nil
+
+	return toDomainUser(result)
 }
 
 func (r *PostgresRepository) GetByEmail(ctx context.Context, tenantID uuid.UUID, email string) (*User, error) {
-	row := r.pool.QueryRow(ctx, queryGetUserByEmail, tenantID, email)
-	user, err := scanUser(row)
+	result, err := r.queries.GetUserByEmail(ctx, sqlcdb.GetUserByEmailParams{
+		TenantID: uuidToPgtype(tenantID),
+		Email:    email,
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrUserNotFound
 		}
 		return nil, platformerrors.NewInfraError("user.repository.GetByEmail", err)
 	}
-	return user, nil
+
+	return toDomainUser(result)
 }
 
 func (r *PostgresRepository) List(ctx context.Context, tenantID uuid.UUID, filter ListFilter) ([]User, int64, error) {
-	var statusFilter *string
-	if filter.Status != nil {
-		s := string(*filter.Status)
-		statusFilter = &s
-	}
+	pgTenantID := uuidToPgtype(tenantID)
+	statusFilter := statusToPgtypeText(filter.Status)
 
-	// Count total matching users.
-	var total int64
-	err := r.pool.QueryRow(ctx, queryCountUsers, tenantID, statusFilter).Scan(&total)
+	total, err := r.queries.CountUsers(ctx, sqlcdb.CountUsersParams{
+		TenantID: pgTenantID,
+		Status:   statusFilter,
+	})
 	if err != nil {
 		return nil, 0, platformerrors.NewInfraError("user.repository.List.count", err)
 	}
 
-	// Fetch the page.
-	rows, err := r.pool.Query(ctx, queryListUsers,
-		tenantID, statusFilter, filter.PageSize, filter.Offset(),
-	)
+	rows, err := r.queries.ListUsers(ctx, sqlcdb.ListUsersParams{
+		TenantID:   pgTenantID,
+		Status:     statusFilter,
+		PageSize:   int32(filter.PageSize),
+		PageOffset: int32(filter.Offset()),
+	})
 	if err != nil {
 		return nil, 0, platformerrors.NewInfraError("user.repository.List.query", err)
 	}
-	defer rows.Close()
 
-	users, err := scanUsers(rows)
-	if err != nil {
-		return nil, 0, platformerrors.NewInfraError("user.repository.List.scan", err)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, 0, platformerrors.NewInfraError("user.repository.List.rows", err)
+	users := make([]User, 0, len(rows))
+	for _, row := range rows {
+		u, err := toDomainUser(row)
+		if err != nil {
+			return nil, 0, platformerrors.NewInfraError("user.repository.List.map", err)
+		}
+		users = append(users, *u)
 	}
 
 	return users, total, nil
 }
 
 func (r *PostgresRepository) Update(ctx context.Context, user *User) (*User, error) {
-	metadata, err := json.Marshal(user.Metadata)
+	metadata, err := marshalMetadata(user.Metadata)
 	if err != nil {
-		return nil, platformerrors.NewInfraError("user.repository.Update", fmt.Errorf("marshaling metadata: %w", err))
+		return nil, platformerrors.NewInfraError("user.repository.Update", err)
 	}
 
-	row := r.pool.QueryRow(ctx, queryUpdateUser,
-		user.Email,
-		user.DisplayName,
-		metadata,
-		user.EmailVerified,
-		user.EmailVerifiedAt,
-		user.ID,
-		user.TenantID,
-	)
-
-	updated, err := scanUser(row)
+	result, err := r.queries.UpdateUser(ctx, sqlcdb.UpdateUserParams{
+		Email:           user.Email,
+		DisplayName:     user.DisplayName,
+		Metadata:        metadata,
+		EmailVerified:   user.EmailVerified,
+		EmailVerifiedAt: timePtrToTimestamptz(user.EmailVerifiedAt),
+		ID:              uuidToPgtype(user.ID),
+		TenantID:        uuidToPgtype(user.TenantID),
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrUserNotFound
@@ -277,18 +158,16 @@ func (r *PostgresRepository) Update(ctx context.Context, user *User) (*User, err
 		return nil, platformerrors.NewInfraError("user.repository.Update", err)
 	}
 
-	return updated, nil
+	return toDomainUser(result)
 }
 
 func (r *PostgresRepository) UpdateStatus(ctx context.Context, tenantID, userID uuid.UUID, status Status, deactivatedAt *time.Time) (*User, error) {
-	row := r.pool.QueryRow(ctx, queryUpdateUserStatus,
-		string(status),
-		deactivatedAt,
-		userID,
-		tenantID,
-	)
-
-	updated, err := scanUser(row)
+	result, err := r.queries.UpdateUserStatus(ctx, sqlcdb.UpdateUserStatusParams{
+		Status:        string(status),
+		DeactivatedAt: timePtrToTimestamptz(deactivatedAt),
+		ID:            uuidToPgtype(userID),
+		TenantID:      uuidToPgtype(tenantID),
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrUserNotFound
@@ -296,20 +175,125 @@ func (r *PostgresRepository) UpdateStatus(ctx context.Context, tenantID, userID 
 		return nil, platformerrors.NewInfraError("user.repository.UpdateStatus", err)
 	}
 
-	return updated, nil
+	return toDomainUser(result)
 }
 
 func (r *PostgresRepository) SetEmailVerified(ctx context.Context, tenantID, userID uuid.UUID) (*User, error) {
-	row := r.pool.QueryRow(ctx, querySetEmailVerified, userID, tenantID)
-	updated, err := scanUser(row)
+	result, err := r.queries.SetEmailVerified(ctx, sqlcdb.SetEmailVerifiedParams{
+		ID:       uuidToPgtype(userID),
+		TenantID: uuidToPgtype(tenantID),
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrUserNotFound
 		}
 		return nil, platformerrors.NewInfraError("user.repository.SetEmailVerified", err)
 	}
-	return updated, nil
+
+	return toDomainUser(result)
 }
+
+// ---------------------------------------------------------------------------
+// Mapping: sqlcdb.User → domain User
+// ---------------------------------------------------------------------------
+
+// toDomainUser converts a sqlc-generated User to a domain User.
+// Returns an error only if the database returned structurally invalid data,
+// which indicates a data integrity problem that must not be hidden.
+func toDomainUser(row sqlcdb.User) (*User, error) {
+	id, err := uuidFromPgtype(row.ID)
+	if err != nil {
+		return nil, fmt.Errorf("mapping user.id: %w", err)
+	}
+	tenantID, err := uuidFromPgtype(row.TenantID)
+	if err != nil {
+		return nil, fmt.Errorf("mapping user.tenant_id: %w", err)
+	}
+
+	metadata, err := unmarshalMetadata(row.Metadata)
+	if err != nil {
+		return nil, fmt.Errorf("mapping user.metadata: %w", err)
+	}
+
+	return &User{
+		ID:              id,
+		TenantID:        tenantID,
+		Email:           row.Email,
+		DisplayName:     row.DisplayName,
+		Status:          Status(row.Status),
+		EmailVerified:   row.EmailVerified,
+		EmailVerifiedAt: timestamptzToTimePtr(row.EmailVerifiedAt),
+		Metadata:        metadata,
+		DeactivatedAt:   timestamptzToTimePtr(row.DeactivatedAt),
+		CreatedAt:       row.CreatedAt.Time,
+		UpdatedAt:       row.UpdatedAt.Time,
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Type conversion helpers: domain ↔ pgtype
+// ---------------------------------------------------------------------------
+
+func uuidToPgtype(u uuid.UUID) pgtype.UUID {
+	return pgtype.UUID{Bytes: u, Valid: true}
+}
+
+func uuidFromPgtype(u pgtype.UUID) (uuid.UUID, error) {
+	if !u.Valid {
+		return uuid.Nil, fmt.Errorf("invalid pgtype.UUID (Valid=false)")
+	}
+	return uuid.UUID(u.Bytes), nil
+}
+
+func timestamptzToTimePtr(t pgtype.Timestamptz) *time.Time {
+	if !t.Valid {
+		return nil
+	}
+	return &t.Time
+}
+
+func timePtrToTimestamptz(t *time.Time) pgtype.Timestamptz {
+	if t == nil {
+		return pgtype.Timestamptz{Valid: false}
+	}
+	return pgtype.Timestamptz{Time: *t, Valid: true}
+}
+
+func statusToPgtypeText(s *Status) pgtype.Text {
+	if s == nil {
+		return pgtype.Text{Valid: false}
+	}
+	return pgtype.Text{String: string(*s), Valid: true}
+}
+
+// ---------------------------------------------------------------------------
+// JSON helpers
+// ---------------------------------------------------------------------------
+
+func marshalMetadata(m map[string]any) ([]byte, error) {
+	if m == nil {
+		return []byte("{}"), nil
+	}
+	return json.Marshal(m)
+}
+
+func unmarshalMetadata(data []byte) (map[string]any, error) {
+	if data == nil {
+		return make(map[string]any), nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	if m == nil {
+		return make(map[string]any), nil
+	}
+	return m, nil
+}
+
+// ---------------------------------------------------------------------------
+// Error classification
+// ---------------------------------------------------------------------------
 
 // isUniqueViolation checks if the error is a PostgreSQL unique constraint violation (23505).
 func isUniqueViolation(err error) bool {
