@@ -419,3 +419,50 @@ func TestUpdateUser_SameEmailNoReset(t *testing.T) {
 		t.Error("email_verified_at should NOT be cleared when email doesn't change")
 	}
 }
+
+func TestSetEmailVerified_Success(t *testing.T) {
+	tenantID := uuid.New()
+	ctx := testContext(tenantID)
+	user := activeUser(tenantID)
+
+	repo := &mockRepository{
+		setEmailVerifiedFn: func(_ context.Context, _, _ uuid.UUID) (*User, error) {
+			now := time.Now().UTC()
+			user.EmailVerified = true
+			user.EmailVerifiedAt = &now
+			return user, nil
+		},
+	}
+
+	svc := newTestService(repo)
+	result, err := svc.SetEmailVerified(ctx, user.ID)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.EmailVerified {
+		t.Error("email_verified should be true")
+	}
+	if result.EmailVerifiedAt == nil {
+		t.Error("email_verified_at should be set")
+	}
+}
+
+func TestSetEmailVerified_NotFound(t *testing.T) {
+	tenantID := uuid.New()
+	ctx := testContext(tenantID)
+
+	repo := &mockRepository{
+		setEmailVerifiedFn: func(_ context.Context, _, _ uuid.UUID) (*User, error) {
+			return nil, ErrUserNotFound
+		},
+	}
+
+	svc := newTestService(repo)
+	_, err := svc.SetEmailVerified(ctx, uuid.New())
+
+	var domainErr *errors.DomainError
+	if !errors.As(err, &domainErr) || domainErr.Code != errors.CodeNotFound {
+		t.Errorf("expected NOT_FOUND error, got: %v", err)
+	}
+}
