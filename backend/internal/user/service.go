@@ -90,6 +90,23 @@ func (s *Service) GetUser(ctx context.Context, userID uuid.UUID) (result *User, 
 	return s.repo.GetByID(ctx, tenantID, userID)
 }
 
+// GetUserByEmail retrieves a user by email within the tenant.
+// This is used by the Auth domain for login (RFC-0002).
+func (s *Service) GetUserByEmail(ctx context.Context, email string) (result *User, err error) {
+	ctx, span := tracer.Start(ctx, "user.service.GetUserByEmail")
+	defer span.End()
+	start := time.Now()
+	defer func() { recordMetrics("get_by_email", err, start) }()
+
+	tenantID, err := requireTenantID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	span.SetAttributes(attribute.String("tenant_id", tenantID.String()))
+
+	return s.repo.GetByEmail(ctx, tenantID, normalizeEmail(email))
+}
+
 // ListUsers returns a paginated list of users for the tenant.
 func (s *Service) ListUsers(ctx context.Context, filter ListFilter) (users []User, total int64, err error) {
 	ctx, span := tracer.Start(ctx, "user.service.ListUsers")
