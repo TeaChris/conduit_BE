@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/conduit-platform/conduit/backend/internal/platform/database"
 	"github.com/conduit-platform/conduit/backend/internal/platform/database/sqlcdb"
 	platformerrors "github.com/conduit-platform/conduit/backend/internal/platform/errors"
 )
@@ -470,4 +471,30 @@ func isUniqueViolation(err error) bool {
 		return pgErr.Code == "23505"
 	}
 	return false
+}
+
+// ---------------------------------------------------------------------------
+// Transaction Manager
+// ---------------------------------------------------------------------------
+
+// PostgresTxManager implements TxManager (defined in service.go) using pgxpool.
+// It wraps database.WithTx and creates a transaction-scoped Repository for
+// the closure, allowing the service layer to execute atomic operations without
+// importing pgx directly.
+type PostgresTxManager struct {
+	pool *pgxpool.Pool
+}
+
+// NewPostgresTxManager creates a new PostgresTxManager.
+func NewPostgresTxManager(pool *pgxpool.Pool) *PostgresTxManager {
+	return &PostgresTxManager{pool: pool}
+}
+
+// WithTx executes fn within a database transaction. The fn receives a
+// Repository bound to the transaction. If fn returns an error, the
+// transaction is rolled back; otherwise it is committed.
+func (m *PostgresTxManager) WithTx(ctx context.Context, fn func(txRepo Repository) error) error {
+	return database.WithTx(ctx, m.pool, func(tx pgx.Tx) error {
+		return fn(NewPostgresRepositoryWithTx(tx))
+	})
 }
