@@ -79,3 +79,70 @@ func TestConfig_IsProd(t *testing.T) {
 		t.Error("expected IsLocal to be true for local environment")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Auth config validation tests
+// ---------------------------------------------------------------------------
+
+func TestValidate_InvalidAccessTokenLifetime(t *testing.T) {
+	t.Setenv("ENVIRONMENT", "local")
+	t.Setenv("AUTH_JWT_ACCESS_TOKEN_LIFETIME", "-1s")
+	_, err := Load()
+	if err == nil {
+		t.Error("expected error for negative access token lifetime")
+	}
+}
+
+func TestValidate_InvalidClockSkew(t *testing.T) {
+	t.Setenv("ENVIRONMENT", "local")
+	t.Setenv("AUTH_JWT_CLOCK_SKEW", "-1s")
+	_, err := Load()
+	if err == nil {
+		t.Error("expected error for negative clock skew")
+	}
+}
+
+func TestValidate_InvalidPasswordMemory(t *testing.T) {
+	t.Setenv("ENVIRONMENT", "local")
+	t.Setenv("AUTH_PASSWORD_MEMORY", "0")
+	_, err := Load()
+	if err == nil {
+		t.Error("expected error for zero password memory")
+	}
+}
+
+func TestValidate_InvalidPasswordIterations(t *testing.T) {
+	t.Setenv("ENVIRONMENT", "local")
+	t.Setenv("AUTH_PASSWORD_ITERATIONS", "0")
+	_, err := Load()
+	if err == nil {
+		t.Error("expected error for zero password iterations")
+	}
+}
+
+func TestValidate_InvalidPasswordParallelism(t *testing.T) {
+	t.Setenv("ENVIRONMENT", "local")
+	t.Setenv("AUTH_PASSWORD_PARALLELISM", "0")
+	_, err := Load()
+	if err == nil {
+		t.Error("expected error for zero password parallelism")
+	}
+}
+
+func TestValidate_InvalidSaltLength(t *testing.T) {
+	t.Setenv("ENVIRONMENT", "local")
+	t.Setenv("AUTH_PASSWORD_SALT_LENGTH", "4")
+	_, err := Load()
+	if err == nil {
+		t.Error("expected error for short salt length")
+	}
+}
+
+func TestValidate_InvalidKeyLength(t *testing.T) {
+	t.Setenv("ENVIRONMENT", "local")
+	t.Setenv("AUTH_PASSWORD_KEY_LENGTH", "8")
+	_, err := Load()
+	if err == nil {
+		t.Error("expected error for short key length")
+	}
+}
