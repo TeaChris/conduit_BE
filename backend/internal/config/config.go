@@ -19,13 +19,14 @@ const (
 
 // Config holds all configuration for the application.
 type Config struct {
-	Environment   Environment       `env:"ENVIRONMENT" envDefault:"local"`
-	Server        ServerConfig      `envPrefix:"SERVER_"`
-	Database      DatabaseConfig    `envPrefix:"DATABASE_"`
-	Redis         RedisConfig       `envPrefix:"REDIS_"`
+	Environment   Environment         `env:"ENVIRONMENT" envDefault:"local"`
+	Server        ServerConfig        `envPrefix:"SERVER_"`
+	Database      DatabaseConfig      `envPrefix:"DATABASE_"`
+	Redis         RedisConfig         `envPrefix:"REDIS_"`
 	Observability ObservabilityConfig `envPrefix:"OTEL_"`
-	Security      SecurityConfig    `envPrefix:"SECURITY_"`
-	Log           LogConfig         `envPrefix:"LOG_"`
+	Security      SecurityConfig      `envPrefix:"SECURITY_"`
+	Auth          AuthConfig          `envPrefix:"AUTH_"`
+	Log           LogConfig           `envPrefix:"LOG_"`
 }
 
 type ServerConfig struct {
@@ -97,6 +98,32 @@ type LogConfig struct {
 	Pretty bool   `env:"PRETTY" envDefault:"false"`
 }
 
+// AuthConfig holds authentication configuration.
+type AuthConfig struct {
+	JWT      JWTConfig      `envPrefix:"JWT_"`
+	Password PasswordConfig `envPrefix:"PASSWORD_"`
+}
+
+// JWTConfig holds JWT signing and validation configuration.
+// The PrivateKey field contains secret key material and MUST NOT be logged.
+type JWTConfig struct {
+	Issuer              string        `env:"ISSUER" envDefault:"conduit"`
+	Audience            string        `env:"AUDIENCE" envDefault:"conduit-api"`
+	ActiveKID           string        `env:"ACTIVE_KID"`
+	PrivateKey          string        `env:"PRIVATE_KEY"`
+	AccessTokenLifetime time.Duration `env:"ACCESS_TOKEN_LIFETIME" envDefault:"15m"`
+	ClockSkew           time.Duration `env:"CLOCK_SKEW" envDefault:"5s"`
+}
+
+// PasswordConfig holds Argon2id password hashing configuration per TDR-0001.
+type PasswordConfig struct {
+	Memory      uint32 `env:"MEMORY" envDefault:"65536"`
+	Iterations  uint32 `env:"ITERATIONS" envDefault:"3"`
+	Parallelism uint8  `env:"PARALLELISM" envDefault:"4"`
+	SaltLength  int    `env:"SALT_LENGTH" envDefault:"16"`
+	KeyLength   uint32 `env:"KEY_LENGTH" envDefault:"32"`
+}
+
 // IsProd returns true if running in production.
 func (c *Config) IsProd() bool {
 	return c.Environment == EnvProduction
@@ -139,6 +166,30 @@ func (c *Config) Validate() error {
 	if c.Observability.TracingSampleRate < 0 || c.Observability.TracingSampleRate > 1 {
 		return fmt.Errorf("tracing sample rate must be between 0.0 and 1.0, got %f",
 			c.Observability.TracingSampleRate)
+	}
+
+	// Auth configuration validation (structural checks).
+	// Key/PEM validation happens during composition (app.buildAuth).
+	if c.Auth.JWT.AccessTokenLifetime <= 0 {
+		return fmt.Errorf("auth jwt access token lifetime must be positive")
+	}
+	if c.Auth.JWT.ClockSkew < 0 {
+		return fmt.Errorf("auth jwt clock skew must be non-negative")
+	}
+	if c.Auth.Password.Memory == 0 {
+		return fmt.Errorf("auth password memory must be > 0")
+	}
+	if c.Auth.Password.Iterations == 0 {
+		return fmt.Errorf("auth password iterations must be > 0")
+	}
+	if c.Auth.Password.Parallelism == 0 {
+		return fmt.Errorf("auth password parallelism must be > 0")
+	}
+	if c.Auth.Password.SaltLength < 8 {
+		return fmt.Errorf("auth password salt length must be >= 8")
+	}
+	if c.Auth.Password.KeyLength < 16 {
+		return fmt.Errorf("auth password key length must be >= 16")
 	}
 
 	return nil
