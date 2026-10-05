@@ -26,6 +26,7 @@ type App struct {
 	logger       zerolog.Logger
 	db           *pgxpool.Pool
 	redis        *redis.Client
+	auth         *authDeps
 	server       *server.Server
 	otelShutdown func(context.Context) error
 }
@@ -71,7 +72,16 @@ func New(ctx context.Context) (*App, error) {
 	userService := user.NewService(userRepo, logger)
 	userHandler := user.NewHandler(userService)
 
-	// 8. Create HTTP server.
+	// 8. Create authentication domain.
+	authComponents, err := buildAuth(cfg.Auth, db, userService, logger)
+	if err != nil {
+		return nil, fmt.Errorf("initializing authentication: %w", err)
+	}
+	logger.Info().
+		Str("kid", cfg.Auth.JWT.ActiveKID).
+		Msg("authentication subsystem initialized")
+
+	// 9. Create HTTP server.
 	srv := server.New(cfg, logger, healthHandler, userHandler)
 
 	return &App{
@@ -79,6 +89,7 @@ func New(ctx context.Context) (*App, error) {
 		logger:       logger,
 		db:           db,
 		redis:        redisClient,
+		auth:         authComponents,
 		server:       srv,
 		otelShutdown: otelShutdown,
 	}, nil
